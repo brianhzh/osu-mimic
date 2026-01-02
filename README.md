@@ -19,11 +19,15 @@ cursor trajectory from model |  heatmap of objects in a random map
 -------------------------|-------------------------
 <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/b7b4323e-a4bd-4810-ac6b-bc3baba70440" /> |  <img width="500" height="400" alt="image" src="https://github.com/user-attachments/assets/b51284b4-2484-49a9-aa45-797fc2230083" />
 
-**1.2:** circles and sliders
+**1.2:** circles and sliders (mostly complete)
 
-**Goal:** high accuracy + combo on standard maps of any star rating
-- follow sliders naturally
-  - shouldn't follow sliderpath exactly, only enough to not miss sliderends
+**Goal:** high accuracy + combo on standard maps of any star rating and follow sliders naturally
+
+- Achieved 99% on high star rating technical maps
+  - [Palace of Melancholia 99% S rank test](https://www.youtube.com/watch?v=qtKvUrv1XOg)
+  - aim on circles (jumps) is quite realistic
+
+- slight bug on some sliders where cursor velocity is not uniform, can be seen at start of test video
 
 **1.3:** refine movement
 
@@ -45,7 +49,7 @@ cursor trajectory from model |  heatmap of objects in a random map
 ## Requirements
 
 ```bash
-pip install torch numpy keyboard
+pip install -r requirements.txt
 ```
 
 - python 3.8+
@@ -53,6 +57,6 @@ pip install torch numpy keyboard
 - numpy
 - keyboard (for live play)
 
-## usage
+## Usage
 
 not quite ready yet...

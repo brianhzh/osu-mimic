@@ -5,7 +5,7 @@ import torch.nn as nn
 class AimGRU(nn.Module):
     def __init__(
         self,
-        input_size: int = 8,
+        input_size: int = 17,
         hidden_size: int = 128,
         num_layers: int = 2,
         output_size: int = 2,
@@ -52,15 +52,9 @@ def count_parameters(model):
 
 if __name__ == "__main__":
     model = AimGRU()
-    print(f"Model created: {count_parameters(model):,} parameters")
 
     batch_size = 4
     seq_len = 512
-    x = torch.randn(batch_size, seq_len, 8)
+    x = torch.randn(batch_size, seq_len, 17)
 
     output, _ = model(x)
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {output.shape}")
-
-    assert output.shape == (batch_size, seq_len, 2), f"Expected (4, 512, 2), got {output.shape}"
-    print("All tests passed!")

@@ -7,20 +7,19 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from app.data.dataset import OsuSequenceDataset, train_val_split_by_map, collate_fn
 from app.models.aim_model import AimGRU, count_parameters
 
 
 def smoothness_loss(predictions):
-    # penalize rapid changes in velocity
     velocity = predictions[:, 1:, :] - predictions[:, :-1, :]
     acceleration = velocity[:, 1:, :] - velocity[:, :-1, :]
     return torch.mean(acceleration ** 2)
 
 
 def direction_loss(batch_input, predictions):
-    # penalize predictions that don't move toward target
     cursor_pos = batch_input[:, :, 0:2]
     target_pos = batch_input[:, :, 2:4]
     distance_to_target = batch_input[:, :, 5:6]
@@ -39,7 +38,6 @@ def direction_loss(batch_input, predictions):
 
 
 def arrival_loss(batch_input, predictions, batch_output):
-    # penalize not arriving at target on time
     time_to_target = batch_input[:, :, 4:5]
     distance_to_target = batch_input[:, :, 5:6]
 
@@ -58,41 +56,34 @@ def arrival_loss(batch_input, predictions, batch_output):
 
 
 def speed_match_loss(batch_output, predictions):
-    # match replay speed profile
     pred_magnitude = torch.norm(predictions, dim=-1)
     actual_magnitude = torch.norm(batch_output, dim=-1)
     return torch.mean(torch.abs(pred_magnitude - actual_magnitude))
 
 
 def velocity_time_constraint_loss(batch_input, predictions):
-    # enforce v = d/t relationship
+    # enforce v = d/t
     time_to_target = batch_input[:, :, 4:5]
     distance_to_target = batch_input[:, :, 5:6]
 
     timestep = 0.016
-    required_velocity_per_sec = distance_to_target / (time_to_target + 0.01)
-    required_velocity_per_frame = required_velocity_per_sec * timestep
-
+    required_velocity = (distance_to_target / (time_to_target + 0.01)) * timestep
     actual_velocity = torch.norm(predictions, dim=-1, keepdim=True)
-    velocity_deficit = required_velocity_per_frame - actual_velocity
 
+    velocity_deficit = required_velocity - actual_velocity
     under_penalty = torch.relu(velocity_deficit) * 5.0
     over_penalty = torch.relu(-velocity_deficit) * 0.3
-    total_penalty = under_penalty + over_penalty
 
-    return torch.mean(total_penalty ** 2)
+    return torch.mean((under_penalty + over_penalty) ** 2)
 
 
 def acceleration_smoothness_loss(batch_input, predictions):
-    # prevent abrupt acceleration changes
     vel_0 = batch_input[:, :, 8:10]
     vel_1 = batch_input[:, :, 10:12]
     vel_2 = batch_input[:, :, 12:14]
     vel_3 = batch_input[:, :, 14:16]
 
-    pred_velocity = predictions
-
-    accel_0_to_pred = pred_velocity - vel_0
+    accel_0_to_pred = predictions - vel_0
     accel_1_to_0 = vel_0 - vel_1
     accel_2_to_1 = vel_1 - vel_2
     accel_3_to_2 = vel_2 - vel_3
@@ -101,20 +92,15 @@ def acceleration_smoothness_loss(batch_input, predictions):
     jerk_1 = accel_1_to_0 - accel_2_to_1
     jerk_2 = accel_2_to_1 - accel_3_to_2
 
-    jerk_loss = torch.mean(jerk_0 ** 2) + torch.mean(jerk_1 ** 2) + torch.mean(jerk_2 ** 2)
-    return jerk_loss
+    return torch.mean(jerk_0 ** 2) + torch.mean(jerk_1 ** 2) + torch.mean(jerk_2 ** 2)
 
 
 def hovering_stability_loss(batch_input, predictions):
-    # prevent wandering when far from next target
     time_to_target = batch_input[:, :, 4:5]
     distance_to_target = batch_input[:, :, 5:6]
-
     hovering_phase = (time_to_target > 0.5).float() * (distance_to_target > 0.3).float()
     movement_magnitude = torch.norm(predictions, dim=-1, keepdim=True)
-    hovering_penalty = hovering_phase * (movement_magnitude ** 2)
-
-    return torch.mean(hovering_penalty)
+    return torch.mean(hovering_phase * (movement_magnitude ** 2))
 
 
 def train_epoch(model, dataloader, optimizer, criterion, device, smoothness_weight=0.01, direction_weight=0.3, arrival_weight=0.5, speed_weight=1.0, velocity_constraint_weight=5.0, accel_smoothness_weight=2.0, hovering_weight=1.0):
@@ -156,6 +142,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, smoothness_weig
                 hovering_weight * hover_loss)
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += loss.item()
@@ -184,7 +171,10 @@ def train_epoch(model, dataloader, optimizer, criterion, device, smoothness_weig
     }
 
 
-def validate(model, dataloader, criterion, device):
+def validate(model, dataloader, criterion, device,
+             smoothness_weight=0.01, direction_weight=0.3, arrival_weight=0.5,
+             speed_weight=1.0, velocity_constraint_weight=2.0,
+             accel_smoothness_weight=1.0, hovering_weight=0.5):
     model.eval()
     total_loss = 0.0
     num_batches = 0
@@ -195,7 +185,24 @@ def validate(model, dataloader, criterion, device):
             batch_output = batch_output.to(device)
 
             predictions, _ = model(batch_input)
-            loss = criterion(predictions, batch_output)
+
+            position_loss = criterion(predictions, batch_output)
+            smooth_loss = smoothness_loss(predictions)
+            dir_loss = direction_loss(batch_input, predictions)
+            arr_loss = arrival_loss(batch_input, predictions, batch_output)
+            spd_loss = speed_match_loss(batch_output, predictions)
+            vel_constraint_loss = velocity_time_constraint_loss(batch_input, predictions)
+            accel_smooth_loss = acceleration_smoothness_loss(batch_input, predictions)
+            hover_loss = hovering_stability_loss(batch_input, predictions)
+
+            loss = (position_loss +
+                    smoothness_weight * smooth_loss +
+                    direction_weight * dir_loss +
+                    arrival_weight * arr_loss +
+                    speed_weight * spd_loss +
+                    velocity_constraint_weight * vel_constraint_loss +
+                    accel_smoothness_weight * accel_smooth_loss +
+                    hovering_weight * hover_loss)
 
             total_loss += loss.item()
             num_batches += 1
@@ -211,6 +218,25 @@ def main():
     VAL_RATIO = 0.3
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # rebalanced weights to reduce conflicts
+    LOSS_WEIGHTS = { 
+        'smoothness': 0.05,
+        'direction': 0.1,
+        'arrival': 0.3,
+        'speed': 0.5,
+        'velocity_constraint': 0.8,
+        'accel_smoothness': 2.0,
+        'hovering': 0.3      
+        
+    }
+    """'old: 
+        smoothness': 0.01,
+        'direction': 0.2,
+        'arrival': 0.3,
+        'speed': 1.0,
+        'velocity_constraint': 2.0,  
+        'accel_smoothness': 1.0,    
+        'hovering': 0.5"""
     print(f"Device: {DEVICE}")
     beatmap_files = sorted(glob.glob('data/beatmaps/*.osu'))
     replay_files = sorted(glob.glob('data/replays/*.osr'))
@@ -236,7 +262,6 @@ def main():
     )
 
     print(f"Total sequences: {len(dataset)}")
-
     train_idx, val_idx = train_val_split_by_map(dataset, val_ratio=VAL_RATIO)
 
     print(f"\nTrain/val split:")
@@ -263,7 +288,7 @@ def main():
         collate_fn=collate_fn
     )
     model = AimGRU(
-        input_size=16,
+        input_size=17,
         hidden_size=128,
         num_layers=2,
         output_size=2,
@@ -274,33 +299,43 @@ def main():
 
     criterion = nn.MSELoss()
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+
     print(f"\nTraining for {NUM_EPOCHS} epochs...")
-    print(f"velocity-time constraint (5.0)")
-    print(f"acceleration smoothness (2.0)")
-    print(f"hovering stability (1.0)")
-    print(f"speed matching (1.0)")
-    print(f"arrival (0.5)")
-    print(f"direction (0.3)")
-    print(f"smoothness (0.01)\n")
+    print(f"Loss weights: {LOSS_WEIGHTS}")
+    print(f"LR scheduler: ReduceLROnPlateau (factor=0.5, patience=5)")
+    print(f"Gradient clipping: max_norm=1.0\n")
 
     best_val_loss = float('inf')
+    epochs_without_improvement = 0
 
     for epoch in range(NUM_EPOCHS):
         train_loss, loss_components = train_epoch(
             model, train_loader, optimizer, criterion, DEVICE,
-            smoothness_weight=0.01,
-            direction_weight=0.3,
-            arrival_weight=0.5,
-            speed_weight=1.0,
-            velocity_constraint_weight=5.0,
-            accel_smoothness_weight=2.0,
-            hovering_weight=1.0
+            smoothness_weight=LOSS_WEIGHTS['smoothness'],
+            direction_weight=LOSS_WEIGHTS['direction'],
+            arrival_weight=LOSS_WEIGHTS['arrival'],
+            speed_weight=LOSS_WEIGHTS['speed'],
+            velocity_constraint_weight=LOSS_WEIGHTS['velocity_constraint'],
+            accel_smoothness_weight=LOSS_WEIGHTS['accel_smoothness'],
+            hovering_weight=LOSS_WEIGHTS['hovering']
         )
-        val_loss = validate(model, val_loader, criterion, DEVICE)
+        val_loss = validate(model, val_loader, criterion, DEVICE,
+                           smoothness_weight=LOSS_WEIGHTS['smoothness'],
+                           direction_weight=LOSS_WEIGHTS['direction'],
+                           arrival_weight=LOSS_WEIGHTS['arrival'],
+                           speed_weight=LOSS_WEIGHTS['speed'],
+                           velocity_constraint_weight=LOSS_WEIGHTS['velocity_constraint'],
+                           accel_smoothness_weight=LOSS_WEIGHTS['accel_smoothness'],
+                           hovering_weight=LOSS_WEIGHTS['hovering'])
+
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
 
         print(f"Epoch {epoch+1:3d}/{NUM_EPOCHS} | "
-              f"Total: {train_loss:.4f} | "
-              f"Val: {val_loss:.6f}")
+              f"Train: {train_loss:.4f} | "
+              f"Val: {val_loss:.4f} | "
+              f"LR: {current_lr:.6f}")
         print(f"      Pos: {loss_components['position']:.4f} | "
               f"VelC: {loss_components['velocity_constraint']:.4f} | "
               f"AccelSmo: {loss_components['accel_smoothness']:.4f} | "
@@ -314,6 +349,13 @@ def main():
             best_val_loss = val_loss
             torch.save(model.state_dict(), 'aim_model_best.pt')
             print(f"         >> New best model saved!")
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= 15:
+            print(f"\nEarly stopping: no improvement for 15 epochs")
+            break
 
     print(f"\n{'='*60}")
     print(f"Training complete!")

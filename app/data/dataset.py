@@ -1,13 +1,71 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Tuple, Optional
 import os
 import pickle
 from pathlib import Path
 
-from app.core.parser import Parser
+from app.core.parser import Parser, calculate_slider_path
 from app.core.replay_parser import ReplayParser
+
+
+class AimTarget:
+    def __init__(self, x, y, time, is_slider=False):
+        self.x = x
+        self.y = y
+        self.time = time
+        self.is_slider = is_slider
+
+def get_beat_length_at_time(timing_points, time):
+    beat_length = 500  # 120 bpm default
+    for tp in timing_points:
+        if tp['time'] <= time:
+            if tp['uninherited'] and tp['beat_length'] is not None:
+                beat_length = tp['beat_length']
+        else:
+            break
+    return beat_length
+
+def expand_hit_objects_to_targets(beatmap):
+    targets = []
+    tick_rate = beatmap.difficulty.get('SliderTickRate', 1.0)
+
+    for obj in beatmap.hit_objects:
+        if obj.is_circle():
+            targets.append(AimTarget(obj.x, obj.y, obj.time, is_slider=False))
+
+        elif obj.is_slider():
+            targets.append(AimTarget(obj.x, obj.y, obj.time, is_slider=True))
+
+            if obj.end_time and obj.end_time > obj.time:
+                duration = obj.end_time - obj.time
+                duration_per_slide = duration / obj.slides
+
+                beat_length = get_beat_length_at_time(beatmap.timing_points, obj.time)
+                sample_interval = beat_length / tick_rate / 8
+
+                base_path = calculate_slider_path(obj, num_points=100)
+
+                for slide in range(obj.slides):
+                    slide_start_time = obj.time + (slide * duration_per_slide)
+                    slide_end_time = slide_start_time + duration_per_slide
+                    path = base_path if slide % 2 == 0 else list(reversed(base_path))
+
+                    sample_time = sample_interval
+                    while sample_time < duration_per_slide:
+                        progress = sample_time / duration_per_slide
+                        path_idx = int(progress * (len(path) - 1))
+                        px, py = path[path_idx]
+                        absolute_time = slide_start_time + sample_time
+                        targets.append(AimTarget(px, py, absolute_time, is_slider=True))
+                        sample_time += sample_interval
+
+                    end_x, end_y = path[-1]
+                    targets.append(AimTarget(end_x, end_y, slide_end_time, is_slider=True))
+
+    targets.sort(key=lambda t: t.time)
+    return targets
 
 INPUT_FEATURES = [
     'cursor_x', 'cursor_y',
@@ -15,6 +73,11 @@ INPUT_FEATURES = [
     'time_to_target',
     'distance_to_target',
     'angle_sin', 'angle_cos',
+    'vel_0_x', 'vel_0_y',
+    'vel_1_x', 'vel_1_y',
+    'vel_2_x', 'vel_2_y',
+    'vel_3_x', 'vel_3_y',
+    'tolerance',
 ]
 
 OUTPUT_FEATURES = ['cursor_x', 'cursor_y']
@@ -24,9 +87,7 @@ TIMESTEP_MS = 16
 TARGET_WINDOW_MS = 800
 SEQUENCE_STRIDE = 256
 
-
 class OsuSequenceDataset(Dataset):
-
     def __init__(
         self,
         beatmap_paths: List[str],
@@ -60,12 +121,9 @@ class OsuSequenceDataset(Dataset):
         all_sequences = []
 
         for i, (beatmap_path, replay_path) in enumerate(self.pairs):
-            print(f"[{i+1}/{len(self.pairs)}] processing {os.path.basename(beatmap_path)}")
-
             cache_file = self.cache_dir / f"seq_{os.path.basename(beatmap_path)}.pkl"
 
             if cache_file.exists():
-                print(f"  loading from cache...")
                 with open(cache_file, 'rb') as f:
                     sequences = pickle.load(f)
             else:
@@ -85,7 +143,6 @@ class OsuSequenceDataset(Dataset):
         beatmap_path: str,
         replay_path: str
     ) -> List[Dict[str, np.ndarray]]:
-        # parse beatmap and replay
         beatmap = Parser(beatmap_path).parse()
         replay = ReplayParser(replay_path)
 
@@ -95,14 +152,15 @@ class OsuSequenceDataset(Dataset):
             print(f"  warning: empty trajectory")
             return []
 
+        # expand sliders into tick targets
+        aim_targets = expand_hit_objects_to_targets(beatmap)
+
         input_frames = []
         output_frames = []
-
-        # track last 4 positions for velocity history
         position_history = [(0.5, 0.5), (0.5, 0.5), (0.5, 0.5), (0.5, 0.5)]
 
         for i, frame in enumerate(trajectory):
-            target = self._find_next_target(frame['time'], beatmap.hit_objects)
+            target = self._find_next_target(frame['time'], aim_targets)
 
             if target is None:
                 continue
@@ -110,7 +168,6 @@ class OsuSequenceDataset(Dataset):
             cursor_x = frame['x']
             cursor_y = frame['y']
 
-            # calculate 4-frame velocity history
             vel_0_x = cursor_x - position_history[0][0]
             vel_0_y = cursor_y - position_history[0][1]
             vel_1_x = position_history[0][0] - position_history[1][0]
@@ -120,6 +177,7 @@ class OsuSequenceDataset(Dataset):
             vel_3_x = position_history[2][0] - position_history[3][0]
             vel_3_y = position_history[2][1] - position_history[3][1]
 
+            # targets are already in pixel coords, normalize here
             target_x = target.x / 512.0
             target_y = target.y / 384.0
             time_to_target = (target.time - frame['time']) / 1000.0
@@ -129,6 +187,8 @@ class OsuSequenceDataset(Dataset):
             distance = np.sqrt(dx**2 + dy**2)
             angle = np.arctan2(dy, dx)
 
+            tolerance = 1.4 if target.is_slider else 0.0
+
             input_feat = np.array([
                 cursor_x, cursor_y,
                 target_x, target_y,
@@ -137,13 +197,13 @@ class OsuSequenceDataset(Dataset):
                 vel_0_x, vel_0_y,
                 vel_1_x, vel_1_y,
                 vel_2_x, vel_2_y,
-                vel_3_x, vel_3_y
+                vel_3_x, vel_3_y,
+                tolerance
             ], dtype=np.float32)
 
             position_history.pop()
             position_history.insert(0, (cursor_x, cursor_y))
 
-            # output delta position
             if i + 1 < len(trajectory):
                 next_frame = trajectory[i + 1]
                 next_x = next_frame['x']
@@ -180,11 +240,11 @@ class OsuSequenceDataset(Dataset):
 
         return sequences
 
-    def _find_next_target(self, current_time: int, hit_objects: List) -> Optional[Any]:
-        for obj in hit_objects:
-            time_diff = obj.time - current_time
+    def _find_next_target(self, current_time: int, aim_targets: List[AimTarget]) -> Optional[AimTarget]:
+        for target in aim_targets:
+            time_diff = target.time - current_time
             if 0 < time_diff <= self.target_window_ms:
-                return obj
+                return target
         return None
 
     def __len__(self) -> int:
@@ -218,11 +278,6 @@ def train_val_split_by_map(
     split_idx = int(len(unique_beatmaps) * (1 - val_ratio))
 
     train_beatmaps = set(unique_beatmaps[:split_idx])
-    val_beatmaps = set(unique_beatmaps[split_idx:])
-
-    print(f"\ntrain/val split:")
-    print(f"  train maps: {len(train_beatmaps)}")
-    print(f"  val maps: {len(val_beatmaps)}")
 
     train_indices = []
     val_indices = []

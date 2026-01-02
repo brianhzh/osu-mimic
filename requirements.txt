@@ -1,28 +1,7 @@
-# Core ML
 torch>=2.0.0
 numpy
-pandas
-
-# Reinforcement Learning (for Phase 2 on cloud GPU)
-gymnasium
-stable-baselines3[extra]
 
 # osu! specific
-osrparse  # Replay parsing
-slider    # Beatmap parsing (alternative/supplement to custom parser)
+osrparse  
 
-# Training utilities
-tensorboard
-tqdm
-pyyaml
-
-# Input control (for testing model in actual game)
-pynput
-pyautogui
-
-# Visualization
-matplotlib
-seaborn
-
-# Data processing
-scikit-learn
+keyboard
