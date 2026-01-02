@@ -32,6 +32,7 @@ Thumbs.db
 *.pickle
 
 *.png
+*.cs
 
 *.log
 logs/
