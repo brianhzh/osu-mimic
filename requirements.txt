@@ -1,7 +1,6 @@
 torch>=2.0.0
 numpy
-
-# osu! specific
-osrparse  
-
-keyboard
+osrparse
+fastapi
+uvicorn
+python-multipart

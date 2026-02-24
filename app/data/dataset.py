@@ -119,7 +119,7 @@ class OsuSequenceDataset(Dataset):
 
     def _build_all_sequences(self) -> List[Dict[str, np.ndarray]]:
         all_sequences = []
-
+        # check for cached maps
         for i, (beatmap_path, replay_path) in enumerate(self.pairs):
             cache_file = self.cache_dir / f"seq_{os.path.basename(beatmap_path)}.pkl"
 

@@ -3,7 +3,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-
+osuvenv/
 .venv/
 env/
 venv/
@@ -36,6 +36,9 @@ Thumbs.db
 
 *.log
 logs/
+
+play_live.py
+generated_replays/
 
 dist/
 build/
