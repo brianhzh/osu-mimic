@@ -1,27 +1,39 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import threading
+import json
 import os
+import sys
 import requests
 
-API_URL = "http://localhost:8000"
+DEFAULT_API_URL = "http://localhost:8000"
+
+
+def get_base_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def load_config():
+    config_path = os.path.join(get_base_dir(), "config.json")
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            return json.load(f)
+    return {}
 
 
 class OsuMimicApp:
     def __init__(self, root):
+        config = load_config()
+        api_url = config.get("api_url", DEFAULT_API_URL)
+
         root.title("osu!mimic")
-        root.geometry("500x250")
+        root.geometry("500x200")
         root.resizable(False, False)
 
         self.osu_path = None
-
-        # API URL
-        url_frame = tk.Frame(root)
-        url_frame.pack(fill=tk.X, padx=20, pady=(20, 5))
-        tk.Label(url_frame, text="API URL:").pack(side=tk.LEFT)
-        self.url_entry = tk.Entry(url_frame)
-        self.url_entry.insert(0, API_URL)
-        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
+        self.api_url = api_url
 
         # File selection
         file_frame = tk.Frame(root)
@@ -58,7 +70,7 @@ class OsuMimicApp:
 
     def _do_generate(self):
         try:
-            url = self.url_entry.get().rstrip("/") + "/generate"
+            url = self.api_url.rstrip("/") + "/generate"
             with open(self.osu_path, "rb") as f:
                 resp = requests.post(url, files={"file": (os.path.basename(self.osu_path), f)})
 
