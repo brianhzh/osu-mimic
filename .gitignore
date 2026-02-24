@@ -38,10 +38,14 @@ Thumbs.db
 logs/
 
 play_live.py
+play_mdn.py
 generated_replays/
+config.json
+*.pem
 
 dist/
 build/
+*.spec
 *.egg-info/
 *.egg
 
