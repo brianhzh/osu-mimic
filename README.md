@@ -15,9 +15,9 @@ trained on human replays, a GRU-based model observes aiming patterns to mimic ai
 
 - capable of 98%+ on high sr (8*+ maps)
   
-cursor trajectory from model |  heatmap of objects in a random map
--------------------------|-------------------------
-<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/b7b4323e-a4bd-4810-ac6b-bc3baba70440" /> |  <img width="500" height="400" alt="image" src="https://github.com/user-attachments/assets/b51284b4-2484-49a9-aa45-797fc2230083" />
+cursor trajectory from model | 
+-------------------------|
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/b7b4323e-a4bd-4810-ac6b-bc3baba70440" /> | 
 
 **1.2:** circles and sliders (mostly complete)
 
