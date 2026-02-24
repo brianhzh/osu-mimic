@@ -52,11 +52,6 @@ cursor trajectory from model |
 pip install -r requirements.txt
 ```
 
-- python 3.8+
-- pytorch
-- numpy
-- keyboard (for live play)
-
 ## Usage
 
-not quite ready yet...
+Download the .exe and run -> Choose a .osu file you want to generate a replay for, then the replay will be outputted in the same directory as the .osu file.
